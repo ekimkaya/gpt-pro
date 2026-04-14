@@ -27,11 +27,14 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from hallucination_detector import (  # noqa: E402
-    CitationValidator,
+    CitationKind,
     CourtListenerClient,
     Document,
+    FirmPolicy,
     HallucinationDetector,
+    MultiJurisdictionValidator,
     RAGIndex,
+    RestatementCorpus,
 )
 from hallucination_detector.providers import (  # noqa: E402
     AnthropicProvider,
@@ -78,12 +81,18 @@ def run_online() -> None:
     index = RAGIndex(LAW_FIRM_CORPUS)
     creator = AnthropicProvider(model="claude-opus-4-6")
     judge = OpenAIProvider(model="gpt-4o")
+    cl = CourtListenerClient()
+    validator = MultiJurisdictionValidator(
+        backends=[cl, RestatementCorpus()],
+    )
     detector = HallucinationDetector(
         creator=creator,
         rag_index=index,
         judge=judge,
         consensus_providers=[creator, judge],
-        citation_validator=CitationValidator(CourtListenerClient()),
+        validator=validator,
+        opinion_fetcher=cl.fetch_opinion_text,
+        policy=FirmPolicy(),
     )
     question = (
         "In a brief for a motion to suppress, summarize the Miranda holding "
@@ -126,23 +135,27 @@ def run_offline() -> None:
             }
         )
 
-    class FakeLookup:
-        def lookup(self, citation):
+    class FakeBackend:
+        def supports(self, c):
+            return c.kind == CitationKind.CASE
+
+        def lookup(self, c):
             known = {
                 "384 U.S. 436": {"caseName": "Miranda v. Arizona"},
                 "410 U.S. 113": {"caseName": "Roe v. Wade"},
             }
-            return known.get(citation.normalized)
+            return known.get(c.normalized)
 
     creator = StubProvider(creator_fn, model="creator-stub")
     judge = StubProvider(judge_fn, model="judge-stub")
 
+    validator = MultiJurisdictionValidator(backends=[FakeBackend()])
     detector = HallucinationDetector(
         creator=creator,
         rag_index=index,
         judge=judge,
         consensus_providers=None,
-        citation_validator=CitationValidator(FakeLookup()),
+        validator=validator,
         score_uncertainty=False,  # stubs don't produce meaningful logprobs
     )
     question = (

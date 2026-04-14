@@ -1,32 +1,43 @@
-"""The orchestrator that threads all four layers together.
+"""Top-level orchestrator.
 
-Usage sketch (see ``examples/legal_brief_check.py`` for a runnable version):
+Pipeline, top to bottom:
 
-    >>> detector = HallucinationDetector(
-    ...     rag_index=index,
-    ...     creator=AnthropicProvider(),
-    ...     judge=OpenAIProvider(),
-    ...     consensus_providers=[AnthropicProvider(), OpenAIProvider(), GeminiProvider()],
-    ...     citation_validator=CitationValidator(CourtListenerClient()),
-    ... )
-    >>> report = detector.check("Summarize the holding in Roe v. Wade, 410 U.S. 113.")
-    >>> if report.blocked:
-    ...     escalate_to_human(report)
-
-Every layer is optional - pass ``None`` to skip it. The detector always runs
-the RAG + generation step (if ``rag_index`` is provided) or uses a plain
-``creator.complete`` otherwise, and then applies whichever downstream layers
-were configured.
+  1. Draft generation — either via RAG over a firm corpus (if ``rag_index``
+     is provided) or a plain ``creator.complete``.
+  2. Citation extraction — every kind (US cases, USC/CFR, foreign, dockets,
+     short forms, secondary sources).
+  3. Short-form resolution — ``id.`` / ``supra`` / short-volume refs are
+     pointed at their full citation; unresolvable refs become findings.
+  4. Quote attribution — quoted strings near each citation are associated
+     with it for the quote checker.
+  5. Multi-jurisdiction validation — route every citation to its backend
+     (CourtListener, USC, CFR, BAILII, EUR-Lex, CanLII, AustLII, RECAP,
+     Restatement), compare name/year/court/judge against the canonical
+     record.
+  6. Quote verification — fetch the opinion text and confirm quoted
+     language actually appears there.
+  7. Bluebook linting — flag format errors that cluster around AI output.
+  8. Judge LLM review — independent audit of the draft.
+  9. Consensus voting — cross-vendor agreement on citations.
+ 10. Uncertainty scoring — logprobs or semantic entropy.
+ 11. Policy / block decision — apply firm overrides, severity threshold,
+     confidence floor, and write the audit record.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
-from .citation_validator import CitationValidator
-from .models import DetectionReport, Finding, Severity
+from .backends.multi import MultiJurisdictionValidator
+from .bluebook import lint as bluebook_lint
+from .citation_extractors import extract_all
+from .citation_resolver import resolve_short_forms
+from .models import DetectionReport, Severity
 from .multi_agent import consensus_vote, judge_review
+from .policy import FirmPolicy
 from .providers import LLMProvider
+from .quote_checker import QuoteAttributionChecker, attribute_quotes
 from .rag import RAGIndex, run_rag_with_citations
 from .uncertainty import score_confidence
 
@@ -37,19 +48,22 @@ class HallucinationDetector:
     rag_index: RAGIndex | None = None
     judge: LLMProvider | None = None
     consensus_providers: list[LLMProvider] | None = None
-    citation_validator: CitationValidator | None = None
+    validator: MultiJurisdictionValidator | None = None
+    # Fetches opinion text by opinion_id for quote attribution. Usually
+    # ``CourtListenerClient.fetch_opinion_text``.
+    opinion_fetcher: Callable[[str], str | None] | None = None
     score_uncertainty: bool = True
-    # If the max finding severity reaches or exceeds this, block the output.
+    bluebook_lint: bool = True
+    policy: FirmPolicy = field(default_factory=FirmPolicy)
+    # Block at or above this severity.
     block_at: Severity = Severity.CRITICAL
-    # Minimum confidence below which we refuse to surface the draft.
     min_confidence: float = 0.6
-
-    # ----- public API ----------------------------------------------------- #
 
     def check(self, question: str, *, top_k: int = 5) -> DetectionReport:
         report = DetectionReport(output="")
+        extras: dict[str, Any] = {}
 
-        # -- Layer 1: RAG with citations --------------------------------- #
+        # --- 1. Draft generation ---------------------------------------- #
         if self.rag_index is not None:
             rag = run_rag_with_citations(
                 question, self.rag_index, self.creator, top_k=top_k
@@ -57,31 +71,52 @@ class HallucinationDetector:
             report.output = rag.answer
             report.findings.extend(rag.findings)
             sources_text = _format_sources(rag.retrieved)
+            extras["retrieved"] = [d.doc_id for d in rag.retrieved]
         else:
             resp = self.creator.complete(question, temperature=0.0, max_tokens=1024)
             report.output = resp.text
             sources_text = None
 
-        # -- Layer 3: citation API validation ---------------------------- #
-        # Runs early so the judge can see which citations already failed.
-        if self.citation_validator is not None and report.output:
-            citations, findings = self.citation_validator.validate(report.output)
-            report.citations = citations
-            report.findings.extend(findings)
+        if not report.output:
+            self._finalize(report, question, extras)
+            return report
 
-        # -- Layer 2a: judge review -------------------------------------- #
-        if self.judge is not None and report.output:
+        # --- 2-3. Extract + resolve short forms ------------------------- #
+        citations = extract_all(report.output)
+        report.findings.extend(resolve_short_forms(citations))
+
+        # --- 4. Attribute quotes to citations --------------------------- #
+        attribute_quotes(report.output, citations)
+
+        # --- 5. API validation across every kind ------------------------ #
+        if self.validator is not None:
+            self.validator.overrides.update(self.policy.override_set())
+            report.findings.extend(self.validator.validate(citations))
+
+        # --- 6. Quote verification -------------------------------------- #
+        if self.opinion_fetcher is not None:
+            q_checker = QuoteAttributionChecker(fetch_text=self.opinion_fetcher)
+            report.findings.extend(q_checker.verify(citations))
+
+        # --- 7. Bluebook lint ------------------------------------------- #
+        if self.bluebook_lint:
+            report.findings.extend(bluebook_lint(report.output, citations))
+
+        report.citations = citations
+
+        # --- 8. Judge review -------------------------------------------- #
+        if self.judge is not None:
             jr = judge_review(question, report.output, self.judge, sources=sources_text)
             report.findings.extend(jr.findings)
             if jr.verdict == "block":
                 report.block_reason = f"Judge ({self.judge.model}) voted to block."
 
-        # -- Layer 2b: consensus ----------------------------------------- #
+        # --- 9. Consensus ----------------------------------------------- #
         if self.consensus_providers and len(self.consensus_providers) >= 2:
             cr = consensus_vote(question, self.consensus_providers)
             report.findings.extend(cr.findings)
 
-        # -- Layer 4: uncertainty / confidence --------------------------- #
+        # --- 10. Uncertainty -------------------------------------------- #
         if self.score_uncertainty:
             cs = score_confidence(self.creator, question)
             report.confidence = cs.score
@@ -92,13 +127,13 @@ class HallucinationDetector:
                     f"{self.min_confidence:.0%}."
                 )
 
-        # -- Blocking decision ------------------------------------------- #
-        self._apply_block_policy(report)
+        # --- 11. Block policy + audit ----------------------------------- #
+        self._finalize(report, question, extras)
         return report
 
-    # ----- internal ------------------------------------------------------- #
+    # ----- internal ------------------------------------------------------ #
 
-    def _apply_block_policy(self, report: DetectionReport) -> None:
+    def _finalize(self, report: DetectionReport, question: str, extras: dict) -> None:
         order = [
             Severity.INFO,
             Severity.LOW,
@@ -111,18 +146,17 @@ class HallucinationDetector:
         if order.index(worst) >= threshold_idx:
             report.blocked = True
             if not report.block_reason:
-                crits = [
-                    f for f in report.findings if order.index(f.severity) >= threshold_idx
-                ]
+                n = sum(
+                    1 for f in report.findings if order.index(f.severity) >= threshold_idx
+                )
                 report.block_reason = (
-                    f"{len(crits)} finding(s) at or above {self.block_at.value} severity."
+                    f"{n} finding(s) at or above {self.block_at.value} severity."
                 )
         elif report.block_reason:
-            # A soft block (e.g. low confidence) was requested by a layer.
             report.blocked = True
+
+        self.policy.record_run(question, report, extras=extras)
 
 
 def _format_sources(docs) -> str:
-    return "\n\n".join(
-        f"[{d.doc_id}] {d.title}\n{d.text}" for d in docs
-    )
+    return "\n\n".join(f"[{d.doc_id}] {d.title}\n{d.text}" for d in docs)

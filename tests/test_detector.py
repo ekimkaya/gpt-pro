@@ -201,12 +201,24 @@ class TestOrchestrator(unittest.TestCase):
             ),
             model="judge",
         )
-        validator = CitationValidator(FakeLookup({}))  # empty DB -> all missing
+        # MultiJurisdictionValidator with a single adapter backend: empty DB
+        # means every citation is reported as not-found.
+        from hallucination_detector.models import CitationKind
+        from hallucination_detector.backends.multi import MultiJurisdictionValidator
+
+        class EmptyBackend:
+            def supports(self, c):
+                return c.kind == CitationKind.CASE
+
+            def lookup(self, c):
+                return None
+
+        validator = MultiJurisdictionValidator(backends=[EmptyBackend()])
         detector = HallucinationDetector(
             creator=creator,
             rag_index=index,
             judge=judge,
-            citation_validator=validator,
+            validator=validator,
             score_uncertainty=False,
         )
         # Query overlaps with corpus so RAG retrieves docs and the creator

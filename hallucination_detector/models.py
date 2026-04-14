@@ -20,29 +20,93 @@ class Severity(str, Enum):
 class CitationStatus(str, Enum):
     VERIFIED = "verified"
     NOT_FOUND = "not_found"
-    MISMATCH = "mismatch"
+    MISMATCH = "mismatch"  # case name disagreement
+    YEAR_MISMATCH = "year_mismatch"
+    JUDGE_MISMATCH = "judge_mismatch"
+    COURT_MISMATCH = "court_mismatch"
+    QUOTE_MISMATCH = "quote_mismatch"
     UNCHECKED = "unchecked"
+    UNCHECKED_RECENT = "unchecked_recent"  # missing, but claim is recent
+    SEALED_OVERRIDE = "sealed_override"    # attorney-signed override
     API_ERROR = "api_error"
+
+
+class CitationKind(str, Enum):
+    CASE = "case"
+    STATUTE = "statute"            # e.g. 42 U.S.C. § 1983
+    REGULATION = "regulation"      # e.g. 29 C.F.R. § 1630.2
+    STATE_STATUTE = "state_statute"
+    FOREIGN_CASE = "foreign_case"  # UK, EU, CA, AU, etc.
+    DOCKET = "docket"              # 1:23-cv-04456
+    SECONDARY = "secondary"        # Restatement, treatise, law review
+    SHORT_FORM = "short_form"      # id., supra - resolves to another citation
+
+
+@dataclass
+class Quote:
+    """A quoted string found next to a citation in model output."""
+
+    text: str
+    start: int
+    end: int
+    attributed_citation: str | None = None  # normalized form of the cite
 
 
 @dataclass
 class Citation:
-    """A legal (or other) citation extracted from model output."""
+    """A legal citation extracted from model output.
+
+    Fields are populated opportunistically by the extractor(s); different
+    citation kinds use different subsets (e.g. statutes use ``title``,
+    ``section``; foreign cases use ``jurisdiction``).
+    """
 
     raw: str
+    kind: CitationKind = CitationKind.CASE
+    # Case-law fields
     volume: str | None = None
     reporter: str | None = None
     page: str | None = None
+    pincite: str | None = None
     case_name: str | None = None
     year: int | None = None
+    court: str | None = None
+    judge: str | None = None
+    # Statute / regulation fields
+    title: str | None = None
+    section: str | None = None
+    subsection: str | None = None
+    # Foreign / docket fields
+    jurisdiction: str | None = None
+    neutral: str | None = None       # e.g. "2020 SCC 7"
+    docket_number: str | None = None
+    # Short-form linkage
+    resolves_to: str | None = None   # normalized form of target citation
+    # Verification results
     status: CitationStatus = CitationStatus.UNCHECKED
     canonical_title: str | None = None
+    canonical_year: int | None = None
+    canonical_judges: list[str] = field(default_factory=list)
+    canonical_court: str | None = None
+    opinion_id: str | None = None
+    opinion_text: str | None = None  # cached full text, when available
+    quotes: list[Quote] = field(default_factory=list)
     notes: str | None = None
+    # Span in the source document the citation was extracted from.
+    span: tuple[int, int] | None = None
 
     @property
     def normalized(self) -> str:
-        if self.volume and self.reporter and self.page:
+        if self.kind == CitationKind.CASE and self.volume and self.reporter and self.page:
             return f"{self.volume} {self.reporter} {self.page}"
+        if self.kind == CitationKind.STATUTE and self.title and self.section:
+            return f"{self.title} U.S.C. § {self.section}"
+        if self.kind == CitationKind.REGULATION and self.title and self.section:
+            return f"{self.title} C.F.R. § {self.section}"
+        if self.kind == CitationKind.FOREIGN_CASE and self.neutral:
+            return self.neutral
+        if self.kind == CitationKind.DOCKET and self.docket_number:
+            return self.docket_number
         return self.raw
 
 
@@ -107,11 +171,19 @@ class DetectionReport:
             "citations": [
                 {
                     "raw": c.raw,
+                    "kind": c.kind.value,
                     "normalized": c.normalized,
                     "case_name": c.case_name,
                     "year": c.year,
+                    "jurisdiction": c.jurisdiction,
+                    "title": c.title,
+                    "section": c.section,
+                    "docket_number": c.docket_number,
+                    "resolves_to": c.resolves_to,
                     "status": c.status.value,
                     "canonical_title": c.canonical_title,
+                    "canonical_year": c.canonical_year,
+                    "canonical_court": c.canonical_court,
                     "notes": c.notes,
                 }
                 for c in self.citations
