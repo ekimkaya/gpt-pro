@@ -109,7 +109,34 @@ def main(argv: list[str] | None = None) -> int:
             "audit log file and exit."
         ),
     )
+    parser.add_argument(
+        "--show-network",
+        action="store_true",
+        help=(
+            "Print every network destination the configured tool will "
+            "contact, then exit. Use this to verify the on-prem story."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    # --- Network policy report (always runs first when requested) ----- #
+    if args.show_network:
+        from .network_policy import format_report, report
+        validator = _build_default_validator(args.offline)
+        opinion_fetcher = None
+        if not args.offline and not args.no_quotes:
+            for b in validator.backends:
+                if hasattr(b, "fetch_opinion_text"):
+                    opinion_fetcher = b.fetch_opinion_text
+                    break
+        detector = HallucinationDetector(
+            creator=StubProvider(lambda p, s: "", model="unused"),
+            validator=validator,
+            opinion_fetcher=opinion_fetcher,
+            score_uncertainty=False,
+        )
+        print(format_report(report(detector)))
+        return 0
 
     # --- Verify-only branch -------------------------------------------- #
     if args.verify_audit:

@@ -1,0 +1,40 @@
+{
+  "drafts": [
+    {
+      "file": "01_clean.txt",
+      "title": "Clean draft - real Miranda citation, valid Id.",
+      "what_to_look_for": "Should produce no findings. Demonstrates baseline behavior.",
+      "expected_layers": []
+    },
+    {
+      "file": "02_mata_avianca.txt",
+      "title": "Mata v. Avianca - three fabricated citations",
+      "what_to_look_for": "All three case citations are fictitious and were the actual hallucinations submitted in Mata v. Avianca, 22-cv-1461 (S.D.N.Y. 2023). Expect CRITICAL findings from the API layer (citations not found in CourtListener) and Bluebook layer.",
+      "expected_layers": ["api"]
+    },
+    {
+      "file": "03_fake_quote.txt",
+      "title": "Real citation, fabricated quotation",
+      "what_to_look_for": "Katz v. United States is a real case, but the long sentence in quotes does not appear in the opinion. The QUOTE_MISMATCH check (online mode only) catches this. Without quote check, the API layer passes.",
+      "expected_layers": ["quote"]
+    },
+    {
+      "file": "04_short_form_swap.txt",
+      "title": "Short-form refers to wrong volume",
+      "what_to_look_for": "The 'Miranda, 500 U.S. 600' short-form refers back to a Miranda case but uses a different volume than the original full citation. The short-form resolver flags this CRITICAL.",
+      "expected_layers": ["resolver"]
+    },
+    {
+      "file": "05_wrong_year.txt",
+      "title": "Real citation, wrong year",
+      "what_to_look_for": "Roe v. Wade, 410 U.S. 113 was decided in 1973, not 1985. The API layer compares the model's claimed year to CourtListener's dateFiled and emits YEAR_MISMATCH (online mode only).",
+      "expected_layers": ["api"]
+    },
+    {
+      "file": "06_statute_and_foreign.txt",
+      "title": "Multi-kind: statute, regulation, UK, Canada, docket",
+      "what_to_look_for": "Demonstrates extraction across every supported citation kind. Most should resolve cleanly when the relevant backends are configured. UK/Canada/RECAP backends optional in offline mode.",
+      "expected_layers": []
+    }
+  ]
+}

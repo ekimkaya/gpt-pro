@@ -60,6 +60,7 @@ from .multi_agent import (
     judge_review,
 )
 from .policy import AuditVerification, FirmPolicy, Override, verify_audit_log
+from .network_policy import NetworkEndpoint, format_report as format_network_report, report as network_report
 from .quote_checker import QuoteAttributionChecker, attribute_quotes
 from .redactor import Redactor, RedactionMap, RedactingProvider
 from .rag import Document, RAGIndex, RAGResult, run_rag_with_citations
@@ -86,6 +87,7 @@ __all__ = [
     "HallucinationDetector",
     "JudgeReport",
     "MultiJurisdictionValidator",
+    "NetworkEndpoint",
     "Override",
     "Quote",
     "QuoteAttributionChecker",
@@ -108,11 +110,13 @@ __all__ = [
     "extract_short_forms",
     "extract_statutes",
     "extract_us_cases",
+    "format_network_report",
     "judge_review",
+    "network_report",
     "resolve_short_forms",
     "run_rag_with_citations",
     "score_confidence",
     "verify_audit_log",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

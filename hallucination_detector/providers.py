@@ -178,6 +178,73 @@ class GeminiProvider:
         return LLMResponse(text=resp.text or "", raw=resp, model=self.model)
 
 
+class OllamaProvider:
+    """Local LLM via Ollama (https://ollama.ai). Zero cloud dependency.
+
+    Ollama runs on the attorney's machine and exposes a tiny HTTP API at
+    ``http://localhost:11434``. Models like ``llama3.1:70b``, ``mistral``,
+    or ``qwen2.5:32b`` perform well enough for the judge / consensus
+    roles without any data leaving the laptop.
+
+    Install: download Ollama, run ``ollama pull llama3.1:8b``, done.
+    """
+
+    name = "ollama"
+
+    def __init__(
+        self,
+        model: str = "llama3.1:8b",
+        base_url: str = "http://localhost:11434",
+        timeout: float = 120.0,
+    ):
+        try:
+            import requests  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "requests is required for OllamaProvider. pip install requests"
+            ) from e
+        import requests
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._session = requests.Session()
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+        logprobs: bool = False,
+    ) -> LLMResponse:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        if system:
+            payload["system"] = system
+        r = self._session.post(
+            f"{self.base_url}/api/generate", json=payload, timeout=self.timeout
+        )
+        r.raise_for_status()
+        data = r.json()
+        return LLMResponse(text=data.get("response", ""), raw=data, model=self.model)
+
+    @classmethod
+    def is_available(cls, base_url: str = "http://localhost:11434") -> bool:
+        """Cheap reachability check; useful for the GUI to grey out the
+        provider if Ollama isn't running."""
+        try:
+            import requests
+            r = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=2)
+            return r.status_code == 200
+        except Exception:  # noqa: BLE001
+            return False
+
+
 class StubProvider:
     """Deterministic stub used in tests and offline demos.
 

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hallucination-detector"
+version = "0.4.0"
+description = "On-premise hallucination detection for legal AI. Runs entirely on your computer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Hallucination Detector contributors" }]
+keywords = ["legal", "ai", "hallucination", "citation", "law", "courtlistener"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Legal Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+]
+
+# Hard dependencies kept tiny so the wheel can be installed offline.
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+# Cloud LLM providers — only install the one(s) the firm actually uses.
+anthropic = ["anthropic>=0.40.0"]
+openai = ["openai>=1.50.0"]
+gemini = ["google-generativeai>=0.8.0"]
+# Convenience meta-extra; firms wanting a fully offline install skip this.
+cloud = ["anthropic>=0.40.0", "openai>=1.50.0", "google-generativeai>=0.8.0"]
+dev = ["pytest>=8.0", "ruff>=0.5.0"]
+
+[project.urls]
+Source = "https://github.com/ekimkaya/gpt-pro"
+Issues = "https://github.com/ekimkaya/gpt-pro/issues"
+
+# Console scripts — installed into PATH on `pip install`.
+[project.scripts]
+hd = "hallucination_detector.cli:main"
+hd-gui = "hallucination_detector.gui:main"
+hd-train = "hallucination_detector.training:main"
+
+[tool.setuptools.packages.find]
+include = ["hallucination_detector*"]
+exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+hallucination_detector = [
+    "training_drafts/*.txt",
+    "training_drafts/*.json",
+    "backends/*.json",
+]

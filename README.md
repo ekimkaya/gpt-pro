@@ -1,216 +1,164 @@
-# Hallucination Detector for Legal AI
+# Hallucination Detector
 
-A multi-layered verification tool for law firms that use LLMs to draft
-filings, memos, or research. It's engineered to catch the failure mode
-that cost the *Mata v. Avianca* attorneys their sanctions: fabricated or
-misused legal citations slipping into a court filing.
+**Software you install on your own computer that catches AI-generated
+hallucinations in legal drafts before they reach a court filing.**
 
-The tool does not try to stop the LLM from hallucinating. It assumes it
-will, and wraps the output in independent verification layers so the
-hallucination never reaches the court.
+This is the failure mode that cost the *Mata v. Avianca* attorneys their
+sanctions: ChatGPT invented case citations, opposing counsel couldn't
+find them, the judge sanctioned the lawyers $5,000 each. California, New
+York, and other state bars are now disciplining attorneys for the same
+pattern. This tool catches it.
 
-## Pipeline
+The product is designed to run **on your own computer**, not in a vendor's
+cloud. No phone-home, no telemetry, no required cloud account, no
+client data leaves your machine unless you explicitly configure it to.
 
-Every call to `HallucinationDetector.check(question)` runs:
-
-1. **Draft generation** — RAG over the firm's authoritative corpus (or
-   plain generation if no corpus is provided).
-2. **Citation extraction** — every kind we recognize:
-   - US case law: `410 U.S. 113`, `925 F.3d 1339`, `N.Y.2d`, `Cal. App.`
-   - US Code: `42 U.S.C. § 1983`
-   - CFR: `29 C.F.R. § 1630.2(h)`
-   - State statutes: `Cal. Penal Code § 187`
-   - UK: `[2019] UKSC 4`, `[2023] EWCA Civ 456`
-   - EU: `Case C-123/19`, ECLI identifiers
-   - Canada: `2020 SCC 7`
-   - Australia: `[2020] HCA 14`
-   - Federal dockets: `1:23-cv-04456`
-   - Secondary sources: Restatements, Model Rules, UCC
-   - Short forms: `Id.`, `supra`, `*Varghese*, 925 F.3d at 1342`
-3. **Short-form resolution** — `id.`/`supra`/party-only refs are tied to
-   their prior full citation; volume mismatches flagged as critical.
-4. **Quote attribution** — quoted spans near each citation are associated
-   with it.
-5. **API validation** — every citation routed to the right backend:
-
-   | Kind | Backend |
-   |---|---|
-   | US case | `CourtListenerClient` |
-   | USC | `USCodeClient` (govinfo.gov) |
-   | CFR | `CFRClient` (eCFR) |
-   | UK | `BAILIIClient` (TNA + BAILII) |
-   | EU | `EURLexClient` |
-   | Canada | `CanLIIClient` |
-   | Australia | `AustLIIClient` |
-   | Docket | `RECAPClient` |
-   | Secondary | `RestatementCorpus` (local JSON) |
-
-   Canonical name, year, court, and judge are compared against the
-   model's claim; each disagreement gets its own `CitationStatus`
-   (`MISMATCH`, `YEAR_MISMATCH`, `COURT_MISMATCH`, `JUDGE_MISMATCH`).
-6. **Quote verification** — the cited opinion's text is fetched and the
-   quoted language is matched (exact + fuzzy). Misses become
-   `QUOTE_MISMATCH` — the "real citation, fake quote" failure mode.
-7. **Bluebook lint** — format errors (double spaces, missing year,
-   lowercase party names) surface at LOW/MEDIUM severity.
-8. **Judge LLM** — a second-vendor model audits the draft for fabricated
-   claims.
-9. **Consensus voting** — N providers are asked the same question;
-   any citation that only one model produced gets flagged.
-10. **Uncertainty scoring** — logprobs when available, semantic-entropy
-    sampling otherwise.
-11. **Policy** — attorney overrides (for sealed/recent cases) and an
-    append-only JSONL audit log make every run auditable.
-
-## Quick start
+## Install
 
 ```bash
-pip install -r requirements.txt
-python -m examples.legal_brief_check --offline   # no network; uses stubs
+pip install hallucination-detector
 ```
 
-Online usage:
+That's it. No account, no license server, no activation. The wheel is
+~200 KB and depends only on `requests`.
+
+Optional cloud LLM extras (only install the ones you actually use):
+
+```bash
+pip install 'hallucination-detector[anthropic]'   # for Claude
+pip install 'hallucination-detector[openai]'      # for GPT
+pip install 'hallucination-detector[gemini]'      # for Gemini
+```
+
+For a fully local LLM (no cloud account at all), install
+[Ollama](https://ollama.ai) and pull a model:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+## Use it
+
+### From the command line
+
+```bash
+# Validate an attorney's draft. No LLM is called.
+hd path/to/draft.txt
+
+# Pure local mode - no API calls of any kind.
+hd path/to/draft.txt --offline
+
+# Show the auditable list of every network destination the tool would
+# contact with your current configuration. Use this to verify the
+# on-prem story to your IT department.
+hd --show-network
+
+# Sign every detection run into an HMAC-chained tamper-evident log.
+export FIRM_AUDIT_HMAC_KEY=$(openssl rand -hex 32)
+hd path/to/draft.txt --audit /var/log/firm/audit.jsonl
+hd --verify-audit /var/log/firm/audit.jsonl
+```
+
+### From the desktop GUI (for attorneys, not engineers)
+
+```bash
+hd-gui
+```
+
+Opens a single-window app: paste a draft, click *Validate*, see findings.
+File menu has *Show network policy* — the same auditable destinations
+list, in a dialog you can show the GC.
+
+### Training mode (learn what each layer catches)
+
+```bash
+hd-train --offline
+```
+
+Walks through six bundled sample drafts — clean baseline, *Mata
+v. Avianca*-style fabricated citations, real-citation-fake-quote, short
+form referring to wrong volume, real citation with wrong year, and a
+multi-jurisdiction draft. For each one it shows the draft, what to look
+for, and what the detector caught.
+
+## What it does
+
+11-step pipeline. Every step is local code; only specific layers reach
+the network, and only to public legal databases — never with client data.
+
+| # | Layer | Does what |
+|---|---|---|
+| 1 | RAG | Grounds the draft in your firm's corpus. Forces `[doc_id]` citations. Optional. |
+| 2 | Extraction | Parses every recognized citation kind (US case law, USC, CFR, state statutes, UK, EU, Canada, Australia, federal dockets, Restatements/UCC/Model Rules, `id.`/`supra` short forms). |
+| 3 | Short-form resolution | Walks the document in order, links `Id.`/`supra`/`*Party*, 925 F.3d at 1342` to the prior full citation. Wrong-volume short forms = CRITICAL. |
+| 4 | Quote attribution | Pairs quoted spans with their nearest citation. |
+| 5 | API validation | Routes each citation to the right backend (CourtListener, govinfo, eCFR, BAILII, EUR-Lex, CanLII, AustLII, RECAP, local Restatement corpus). Compares case name / year / court / judge against canonical record. |
+| 6 | Quote verification | Fetches the cited opinion and checks that quoted language actually appears there (exact + fuzzy match). Catches "real citation, fake quote." |
+| 7 | Bluebook lint | Format errors that cluster around AI output. |
+| 8 | Judge LLM | Optional. Second-vendor model audits the draft. |
+| 9 | Consensus | Optional. N providers asked the same question; solo citations flagged. |
+| 10 | Uncertainty | Optional. Logprobs (OpenAI) or semantic-entropy sampling (Claude). |
+| 11 | Policy | Attorney overrides for sealed/recent cases; HMAC-chained audit log. |
+
+Steps 1, 8, 9, 10 require an LLM (cloud or local Ollama). **Steps 2–7
+and 11 require nothing but the install** — that's the validator-only
+mode most firms will run.
+
+## Privacy guarantees you can verify
+
+1. **No telemetry.** Grep the source. The tool never contacts a vendor
+   server. You can audit every byte that leaves your machine with
+   `hd --show-network`.
+2. **Local LLM option.** Use Ollama and zero generative AI traffic
+   leaves your machine.
+3. **Reversible PII redaction** when you do use a cloud LLM.
+   `RedactingProvider` scrubs client names, matter numbers, SSNs, emails,
+   phone numbers, dollar amounts, and dates before any prompt leaves the
+   network. Legal citations pass through verbatim so validation still
+   works. Tokens are restored in the response.
+4. **Tamper-evident audit log.** HMAC chain over JSONL records.
+   `hd --verify-audit` confirms the chain or pinpoints the first
+   tampered line. This is the artifact you'd hand to bar counsel or a
+   malpractice carrier if challenged.
+
+## Programmatic use
 
 ```python
 from hallucination_detector import (
-    HallucinationDetector, RAGIndex, Document, FirmPolicy,
-    MultiJurisdictionValidator,
-    CourtListenerClient, USCodeClient, CFRClient, BAILIIClient,
-    CanLIIClient, AustLIIClient, RECAPClient, RestatementCorpus,
+    HallucinationDetector, MultiJurisdictionValidator,
+    CourtListenerClient, USCodeClient, RestatementCorpus,
+    FirmPolicy,
 )
-from hallucination_detector.providers import AnthropicProvider, OpenAIProvider
-
-index = RAGIndex([Document(doc_id="CASE-MIRANDA", title="...", text="...")])
+from hallucination_detector.providers import OllamaProvider
 
 cl = CourtListenerClient()
-validator = MultiJurisdictionValidator(
-    backends=[
-        cl, USCodeClient(), CFRClient(),
-        BAILIIClient(), CanLIIClient(), AustLIIClient(),
-        RECAPClient(), RestatementCorpus(),
-    ],
-)
-policy = FirmPolicy(audit_path="/var/log/firm/hallucination-audit.jsonl")
-policy.add_override("123 X.Y.Z 456", "J. Smith", "Sealed case, 2024 matter #42")
-
 detector = HallucinationDetector(
-    creator=AnthropicProvider("claude-opus-4-6"),
-    rag_index=index,
-    judge=OpenAIProvider("gpt-4o"),
-    consensus_providers=[AnthropicProvider(), OpenAIProvider()],
-    validator=validator,
-    opinion_fetcher=cl.fetch_opinion_text,  # enables quote verification
-    policy=policy,
+    creator=OllamaProvider("llama3.1:8b"),         # local model, no cloud
+    judge=OllamaProvider("llama3.1:70b"),          # local, larger judge
+    validator=MultiJurisdictionValidator(
+        backends=[cl, USCodeClient(), RestatementCorpus()],
+    ),
+    opinion_fetcher=cl.fetch_opinion_text,        # quote verification
+    policy=FirmPolicy(audit_path="/var/log/firm/audit.jsonl",
+                      audit_hmac_key=bytes.fromhex(os.environ["FIRM_AUDIT_HMAC_KEY"])),
 )
 
-report = detector.check("Draft one paragraph on Miranda warnings in custody.")
+# Either generate a draft from a question:
+report = detector.check("Draft a paragraph on Miranda warnings in custody.")
+# Or validate an attorney's pre-written draft (no LLM call at all):
+report = detector.check_draft(open("brief.txt").read())
+
 if report.blocked:
     escalate_to_human(report)
-else:
-    deliver_to_attorney(report.output, report.citations, report.confidence)
 ```
 
-## Who this is for
+## Who is this for
 
-Law firms and solo practitioners who already use generative AI for
-drafting but need a verification step before anything is filed, shared
-with a client, or relied on in discovery. It is **not** a substitute for
-attorney review; it is a pre-filter that makes that review tractable by
-flagging exactly which sentences need to be checked.
-
-## Configuration
-
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` — LLM providers
-- `COURTLISTENER_TOKEN` — recommended for production
-- `GOVINFO_API_KEY` — for USC lookup (defaults to `DEMO_KEY`)
-- `CANLII_API_KEY` — required for Canadian lookups
-- `HallucinationDetector.block_at` — severity floor for auto-block
-  (default `CRITICAL`)
-- `HallucinationDetector.min_confidence` — confidence floor
-  (default `0.6`)
-- `FirmPolicy.add_override(citation, attorney, reason)` — attorney
-  sign-off for sealed/very-recent cases
-
-## Data protection (for law firms using the tool online)
-
-Three guarantees that are expected by GCs, malpractice carriers, and
-ABA Formal Opinion 512:
-
-### 1. Redaction around every outbound LLM call
-
-`RedactingProvider` wraps any `LLMProvider` and scrubs PII before the
-prompt leaves the network, then restores the tokens in the response.
-**Legal citations are preserved verbatim** so validation still works.
-
-```python
-from hallucination_detector import Redactor, RedactingProvider
-from hallucination_detector.providers import AnthropicProvider
-
-redactor = Redactor(
-    client_names={"Acme Corp.", "John Smith"},
-    matter_number_patterns=[r"MATTER-\d{6}"],
-)
-provider = RedactingProvider(
-    inner=AnthropicProvider(model="claude-opus-4-6"),
-    redactor=redactor,
-    redacted_log=lambda r: audit.write(r),  # every outbound byte is logged
-)
-# provider is a drop-in replacement anywhere an LLMProvider is expected.
-```
-
-### 2. Validator-only mode (zero LLM calls, zero privilege risk)
-
-For firms that want to pilot without sending anything to a generative
-model: run validation on an attorney-drafted document. Extraction,
-short-form resolution, API validation, quote checking, and Bluebook lint
-all run with no LLM in the loop.
-
-```bash
-# Validate a draft, hitting only public citation databases (no client
-# data leaves the firm except the citation itself, which is not privileged).
-python -m hallucination_detector draft.txt
-
-# Fully offline - no network at all. Pure local static analysis.
-python -m hallucination_detector draft.txt --offline
-
-# JSON for downstream tooling.
-python -m hallucination_detector draft.txt --json > report.json
-```
-
-Or programmatically:
-
-```python
-report = detector.check_draft(attorney_draft, use_api=True)
-```
-
-### 3. HMAC-signed, tamper-evident audit log
-
-Every detection run (and every override added/removed) is written to an
-append-only JSONL file. When a HMAC key is supplied, each record carries
-a chained signature — altering any prior record breaks the chain and
-`verify_audit_log()` pinpoints the first tampered line.
-
-```python
-from hallucination_detector import FirmPolicy, verify_audit_log
-
-policy = FirmPolicy(
-    audit_path="/var/log/firm/audit.jsonl",
-    audit_hmac_key=bytes.fromhex(os.environ["FIRM_AUDIT_HMAC_KEY"]),
-)
-
-# Later, from another process:
-result = verify_audit_log("/var/log/firm/audit.jsonl", key)
-assert result.ok, f"Line {result.first_bad_line}: {result.reason}"
-```
-
-From the CLI:
-
-```bash
-export FIRM_AUDIT_HMAC_KEY=$(openssl rand -hex 32)
-python -m hallucination_detector draft.txt --audit audit.jsonl
-python -m hallucination_detector --verify-audit audit.jsonl
-# audit OK (N signed records)
-```
+Solo practitioners, small firms, and BigLaw IT teams who want to use AI
+for drafting **and** want documentation that they did so responsibly.
+The tool is the documentation: every run is logged, the audit log is
+tamper-evident, the network policy is auditable, and the source code is
+open so the firm's GC can have it reviewed.
 
 ## Tests
 
@@ -218,4 +166,8 @@ python -m hallucination_detector --verify-audit audit.jsonl
 python -m unittest discover -s tests
 ```
 
-40 tests, all offline (stub providers, fake backends, tamper simulation).
+45 tests, all offline (stub providers, fake backends, tamper simulation).
+
+## License
+
+MIT.
