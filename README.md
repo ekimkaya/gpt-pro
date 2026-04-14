@@ -131,10 +131,91 @@ flagging exactly which sentences need to be checked.
 - `FirmPolicy.add_override(citation, attorney, reason)` — attorney
   sign-off for sealed/very-recent cases
 
+## Data protection (for law firms using the tool online)
+
+Three guarantees that are expected by GCs, malpractice carriers, and
+ABA Formal Opinion 512:
+
+### 1. Redaction around every outbound LLM call
+
+`RedactingProvider` wraps any `LLMProvider` and scrubs PII before the
+prompt leaves the network, then restores the tokens in the response.
+**Legal citations are preserved verbatim** so validation still works.
+
+```python
+from hallucination_detector import Redactor, RedactingProvider
+from hallucination_detector.providers import AnthropicProvider
+
+redactor = Redactor(
+    client_names={"Acme Corp.", "John Smith"},
+    matter_number_patterns=[r"MATTER-\d{6}"],
+)
+provider = RedactingProvider(
+    inner=AnthropicProvider(model="claude-opus-4-6"),
+    redactor=redactor,
+    redacted_log=lambda r: audit.write(r),  # every outbound byte is logged
+)
+# provider is a drop-in replacement anywhere an LLMProvider is expected.
+```
+
+### 2. Validator-only mode (zero LLM calls, zero privilege risk)
+
+For firms that want to pilot without sending anything to a generative
+model: run validation on an attorney-drafted document. Extraction,
+short-form resolution, API validation, quote checking, and Bluebook lint
+all run with no LLM in the loop.
+
+```bash
+# Validate a draft, hitting only public citation databases (no client
+# data leaves the firm except the citation itself, which is not privileged).
+python -m hallucination_detector draft.txt
+
+# Fully offline - no network at all. Pure local static analysis.
+python -m hallucination_detector draft.txt --offline
+
+# JSON for downstream tooling.
+python -m hallucination_detector draft.txt --json > report.json
+```
+
+Or programmatically:
+
+```python
+report = detector.check_draft(attorney_draft, use_api=True)
+```
+
+### 3. HMAC-signed, tamper-evident audit log
+
+Every detection run (and every override added/removed) is written to an
+append-only JSONL file. When a HMAC key is supplied, each record carries
+a chained signature — altering any prior record breaks the chain and
+`verify_audit_log()` pinpoints the first tampered line.
+
+```python
+from hallucination_detector import FirmPolicy, verify_audit_log
+
+policy = FirmPolicy(
+    audit_path="/var/log/firm/audit.jsonl",
+    audit_hmac_key=bytes.fromhex(os.environ["FIRM_AUDIT_HMAC_KEY"]),
+)
+
+# Later, from another process:
+result = verify_audit_log("/var/log/firm/audit.jsonl", key)
+assert result.ok, f"Line {result.first_bad_line}: {result.reason}"
+```
+
+From the CLI:
+
+```bash
+export FIRM_AUDIT_HMAC_KEY=$(openssl rand -hex 32)
+python -m hallucination_detector draft.txt --audit audit.jsonl
+python -m hallucination_detector --verify-audit audit.jsonl
+# audit OK (N signed records)
+```
+
 ## Tests
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-30 tests, all offline (stub providers, fake backends).
+40 tests, all offline (stub providers, fake backends, tamper simulation).

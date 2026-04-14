@@ -59,12 +59,14 @@ from .multi_agent import (
     consensus_vote,
     judge_review,
 )
-from .policy import FirmPolicy, Override
+from .policy import AuditVerification, FirmPolicy, Override, verify_audit_log
 from .quote_checker import QuoteAttributionChecker, attribute_quotes
+from .redactor import Redactor, RedactionMap, RedactingProvider
 from .rag import Document, RAGIndex, RAGResult, run_rag_with_citations
 from .uncertainty import ConfidenceScore, score_confidence
 
 __all__ = [
+    "AuditVerification",
     "AustLIIClient",
     "BAILIIClient",
     "CFRClient",
@@ -90,6 +92,9 @@ __all__ = [
     "RAGIndex",
     "RAGResult",
     "RECAPClient",
+    "RedactingProvider",
+    "RedactionMap",
+    "Redactor",
     "RestatementCorpus",
     "Severity",
     "USCodeClient",
@@ -107,6 +112,7 @@ __all__ = [
     "resolve_short_forms",
     "run_rag_with_citations",
     "score_confidence",
+    "verify_audit_log",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

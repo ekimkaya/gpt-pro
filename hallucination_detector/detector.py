@@ -59,6 +59,48 @@ class HallucinationDetector:
     block_at: Severity = Severity.CRITICAL
     min_confidence: float = 0.6
 
+    def check_draft(
+        self,
+        draft: str,
+        *,
+        use_api: bool = True,
+        use_quotes: bool = True,
+    ) -> DetectionReport:
+        """Validator-only mode: run deterministic layers on an attorney's
+        draft with no LLM calls.
+
+        This is the no-privilege-risk mode. It runs citation extraction,
+        short-form resolution, quote attribution, API-based citation
+        validation, quote verification, and Bluebook lint on a pre-written
+        draft. No prompts are sent to any generative model.
+
+        Set ``use_api=False`` to also skip outbound API calls — pure
+        offline static analysis (regex + short-form chain + Bluebook).
+        """
+        report = DetectionReport(output=draft)
+        if not draft.strip():
+            self._finalize(report, "(validator-only run)", {})
+            return report
+
+        citations = extract_all(draft)
+        report.findings.extend(resolve_short_forms(citations))
+        attribute_quotes(draft, citations)
+
+        if use_api and self.validator is not None:
+            self.validator.overrides.update(self.policy.override_set())
+            report.findings.extend(self.validator.validate(citations))
+
+        if use_api and use_quotes and self.opinion_fetcher is not None:
+            q_checker = QuoteAttributionChecker(fetch_text=self.opinion_fetcher)
+            report.findings.extend(q_checker.verify(citations))
+
+        if self.bluebook_lint:
+            report.findings.extend(bluebook_lint(draft, citations))
+
+        report.citations = citations
+        self._finalize(report, "(validator-only run)", {"mode": "validator_only"})
+        return report
+
     def check(self, question: str, *, top_k: int = 5) -> DetectionReport:
         report = DetectionReport(output="")
         extras: dict[str, Any] = {}
